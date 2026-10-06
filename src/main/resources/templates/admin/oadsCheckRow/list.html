@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org" xmlns:sec="http://www.pollix.at/thymeleaf/shiro">
+<head>
+    <th:block th:include="include :: header('集中更换核验行核收（新建/修改两入口·同批幂等·年度定死）')"/>
+</head>
+<body class="pear-container">
+<div class="layui-card">
+    <div class="layui-card-body">
+        <blockquote class="layui-elem-quote">
+            一次核收为一批，批次码是批的唯一身份。<b>没有行数上限这回事，多多益善</b>；
+            硬界 <b th:text="${hardRowLimit}">100000</b> 只防误传，越过整批退回。<br>
+            新建、修改是两个入口，<b>各写各的校验规矩</b>，每行结论带判定来源（依哪一套第几条判的）。<br>
+            同批并着送两回幂等：不另立批、行不重复入、数量不翻倍；来路与收费年度以<b>首回收讫版</b>为准冻结，
+            修改只改行内容。整册核收与逐行落去向读同一个收费年度。
+        </blockquote>
+        <form class="layui-form" action="">
+            <div class="layui-form-item">
+                <label class="layui-form-label">收费年度</label>
+                <div class="layui-input-inline">
+                    <input type="text" name="feeYear" placeholder="如 2026，空=全部" class="layui-input">
+                </div>
+                <button class="pear-btn pear-btn-md pear-btn-primary" lay-submit lay-filter="batch-query">
+                    <i class="layui-icon layui-icon-search"></i> 查批账
+                </button>
+                <button type="reset" class="pear-btn pear-btn-md">
+                    <i class="layui-icon layui-icon-refresh"></i> 重置
+                </button>
+                <button shiro:hasPermission="oads:oadsCheckRow:submit" type="button"
+                        class="pear-btn pear-btn-md pear-btn-warming" id="new-btn">
+                    <i class="layui-icon layui-icon-add-1"></i> 新建批核收
+                </button>
+                <button shiro:hasPermission="oads:oadsCheckRow:submit" type="button"
+                        class="pear-btn pear-btn-md" id="modify-btn">
+                    <i class="layui-icon layui-icon-edit"></i> 修改批改版
+                </button>
+                <button shiro:hasPermission="oads:oadsCheckRow:list" type="button"
+                        class="pear-btn pear-btn-md" id="feebook-btn">
+                    <i class="fa fa-book"></i> 收费册年度归集
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="layui-card">
+    <div class="layui-card-body">
+        <table id="batch-table" lay-filter="batch-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="batch-bar">
+    <button shiro:hasPermission="oads:oadsCheckRow:view" class="pear-btn pear-btn-sm pear-btn-primary" lay-event="receipt">出回执</button>
+    <button shiro:hasPermission="oads:oadsCheckRow:list" class="pear-btn pear-btn-sm pear-btn-danger" lay-event="errors">退回明细</button>
+    <button shiro:hasPermission="oads:oadsCheckRow:list" class="pear-btn pear-btn-sm" lay-event="detail">行详情</button>
+</script>
+
+<script type="text/html" id="batch-channel">
+    {{# if (d.putKind == 'CITY') { }}<span class="layui-badge">市局自核</span>
+    {{# } else { }}<span class="layui-badge layui-bg-blue">区级报上来</span>{{# } }}
+    {{# if (d.dupCount > 0) { }}<span class="layui-badge layui-bg-orange">重交{{d.dupCount}}回（未重复入行）</span>{{# } }}
+</script>
+
+<script type="text/html" id="batch-counts">
+    物理 <b>{{d.countedRows}}</b> → 入账 <b>{{d.landedRows}}</b><br>
+    收下 <b style="color:#0a0;">{{d.acceptedRows}}</b> ＋ 退回 <b style="color:#c00;">{{d.returnedRows}}</b>
+    {{# if (d.mergedRows > 0) { }}<br><span class="layui-badge layui-bg-gray">同码合并 {{d.mergedRows}} 条</span>{{# } }}
+</script>
+
+<th:block th:include="include :: footer"/>
+<script>
+    layui.use(['table', 'form', 'jquery', 'layer'], function () {
+        let table = layui.table;
+        let form = layui.form;
+        let $ = layui.jquery;
+        let layer = layui.layer;
+        let MODULE_PATH = rootPath + "/oadsCheckRow/";
+
+        table.render({
+            elem: '#batch-table',
+            url: MODULE_PATH + 'listBatches',
+            method: 'get',
+            page: false,
+            cols: [[
+                {title: '批次码', field: 'batchNo', align: 'center', width: 150},
+                {title: '来路/重交', align: 'center', width: 220, toolbar: '#batch-channel'},
+                {title: '收费年度', field: 'feeYear', align: 'center', width: 90},
+                {title: '点数（回库逐行）', align: 'center', width: 220, toolbar: '#batch-counts'},
+                {title: '收讫时刻', field: 'receivedAt', align: 'center', width: 170},
+                {title: '年度口径', field: 'feeYearBasis', align: 'left', minWidth: 260},
+                {title: '操作', toolbar: '#batch-bar', align: 'center', width: 260, fixed: 'right'}
+            ]],
+            skin: 'line',
+            defaultToolbar: ['refresh', 'filter']
+        });
+
+        form.on('submit(batch-query)', function (data) {
+            table.reload('batch-table', {where: data.field, page: {curr: 1}});
+            return false;
+        });
+
+        function statusBadge(s) {
+            if (s === 2) return '<span class="layui-badge layui-bg-red">已退回</span>';
+            if (s === 1) return '<span class="layui-badge layui-bg-green">已收下</span>';
+            return '<span class="layui-badge">未判(' + s + ')</span>';
+        }
+
+        function showReceipt(batchNo) {
+            $.get(MODULE_PATH + 'receipt', {batchNo: batchNo}, function (r) {
+                if (r.code !== 200) { layer.msg(r.msg, {icon: 2}); return; }
+                let d = r.data;
+                let html = '<div style="line-height:1.9;">';
+                html += '<b>批次码：</b>' + d.batchNo + '　<b>来路：</b>' + (d.putKind === 'CITY' ? '市局自核' : '区级报上来')
+                    + '　<b>收费年度：</b>' + d.feeYear + '<br>';
+                html += '<b>四数（一律回库逐行数）：</b>物理行 <b>' + d.countedRows + '</b>（合并前）＝入账 <b>'
+                    + d.landedRows + '</b>＝收下 <b>' + d.acceptedRows + '</b>＋退回 <b>' + d.returnedRows + '</b>　'
+                    + (d.balanced ? '<span class="layui-badge layui-bg-green">互印平齐</span>'
+                                  : '<span class="layui-badge layui-bg-red">对不齐，逐行点名见下</span>') + '<br>';
+                html += '<span style="color:#666;">' + (d.note || '') + '</span>';
+                if (d.mismatches && d.mismatches.length) {
+                    html += '<br><b style="color:#c0392b;">对不齐逐笔点名：</b><br>';
+                    d.mismatches.forEach(function (m) {
+                        html += (m.rowNo ? '第' + m.rowNo + '行 ' : '') + (m.itemCode || '') + '：' + m.detail + '<br>';
+                    });
+                }
+                html += '<table class="layui-table" style="margin-top:8px;"><thead><tr>'
+                    + '<th>原报行次</th><th>点位编码</th><th>状态</th><th>应更换</th><th>核验合格</th>'
+                    + '<th>判定来源</th><th>收费年度</th><th>逐句原因</th></tr></thead><tbody>';
+                d.rows.forEach(function (it) {
+                    html += '<tr><td>' + it.rowNo
+                        + (it.mergedRowNos && it.mergedRowNos.length ? '（并入' + it.mergedRowNos.join('、') + '）' : '')
+                        + '</td><td>' + (it.itemCode || '（缺填）') + '</td>'
+                        + '<td>' + statusBadge(it.status) + '</td>'
+                        + '<td>' + (it.qty == null ? '缺' : it.qty) + '</td>'
+                        + '<td>' + (it.chkNum == null ? '缺' : it.chkNum) + '</td>'
+                        + '<td>' + (it.judgeSource || '') + '</td>'
+                        + '<td>' + it.feeYear + '</td>'
+                        + '<td style="text-align:left;">' + (it.reason || '') + '</td></tr>';
+                });
+                html += '</tbody></table></div>';
+                layer.open({type: 1, title: '核收回执（批次码 ' + d.batchNo + '）', area: ['1150px', '620px'], content: html});
+            });
+        }
+
+        function showErrors(batchNo) {
+            $.get(MODULE_PATH + 'listErrors', {batchNo: batchNo}, function (r) {
+                if (r.code !== 200) { layer.msg(r.msg, {icon: 2}); return; }
+                let html = '<table class="layui-table"><thead><tr>'
+                    + '<th>原报行次</th><th>点位编码</th><th>应更换</th><th>核验合格</th>'
+                    + '<th>判定来源</th><th>收费年度</th><th>退回逐句原因</th></tr></thead><tbody>';
+                if (!r.data.length) { html += '<tr><td colspan="7" style="text-align:center;color:#0a0;">本批无退回行</td></tr>'; }
+                r.data.forEach(function (x) {
+                    html += '<tr><td>' + x.rowNo + '</td><td>' + (x.itemCode || '（缺填）') + '</td>'
+                        + '<td>' + x.qty + '</td><td>' + x.chkNum + '</td>'
+                        + '<td>' + (x.judgeSource || '') + '</td><td>' + x.feeYear + '</td>'
+                        + '<td style="text-align:left;">' + (x.reason || '') + '</td></tr>';
+                });
+                html += '</tbody></table>';
+                layer.open({type: 1, title: '退回行明细（批次码 ' + batchNo + '）', area: ['1050px', '560px'], content: html});
+            });
+        }
+
+        function showDetailPicker(batchNo) {
+            layer.prompt({title: '输入要查的原报行次', formType: 0}, function (rowNo, index) {
+                $.get(MODULE_PATH + 'detail', {batchNo: batchNo, rowNo: rowNo}, function (r) {
+                    if (r.code !== 200) { layer.msg(r.msg, {icon: 2}); return; }
+                    layer.close(index);
+                    let x = r.data;
+                    let html = '<div style="line-height:2;padding:10px;">'
+                        + '<b>批次码：</b>' + x.batchNo + '　<b>原报行次：</b>' + x.rowNo + '<br>'
+                        + '<b>点位编码：</b>' + (x.itemCode || '（缺填）') + '<br>'
+                        + '<b>状态：</b>' + statusBadge(x.status) + '　<b>收费年度：</b>' + x.feeYear + '<br>'
+                        + '<b>应更换处数：</b>' + x.qty + '　<b>核验合格处数：</b>' + x.chkNum + '<br>'
+                        + '<b>判定来源：</b>' + (x.judgeSource || '') + '<br>'
+                        + '<b>逐句原因：</b>' + (x.reason || '') + '<br>'
+                        + '<b>批内合并：</b>' + (x.mergedRowNos || '无') + '</div>';
+                    layer.open({type: 1, title: '核验行详情', area: ['620px', '420px'], content: html});
+                });
+            });
+        }
+
+        table.on('tool(batch-table)', function (obj) {
+            let batchNo = obj.data.batchNo;
+            if (obj.event === 'receipt') { showReceipt(batchNo); }
+            else if (obj.event === 'errors') { showErrors(batchNo); }
+            else if (obj.event === 'detail') { showDetailPicker(batchNo); }
+        });
+
+        function submitDialog(isModify) {
+            let title = isModify ? '修改批改版（来路/年度以首回收讫版为准）' : '新建批核收（多多益善，同批重交幂等）';
+            layer.open({
+                type: 1, title: title, area: ['860px', '580px'],
+                content: '<div style="padding:16px;">'
+                    + '<div class="layui-form-item">批次码：<input id="s-batch" class="layui-input" style="width:260px;display:inline-block;">'
+                    + (isModify ? '' : ' 来路：'
+                        + '<input type="radio" name="sPut" value="DISTRICT" title="区级报上来" checked>'
+                        + '<input type="radio" name="sPut" value="CITY" title="市局自核">') + '</div>'
+                    + '<textarea id="s-json" class="layui-textarea" style="height:420px;" placeholder='
+                    + "'核验行 JSON 数组：[{rowNo,itemCode,qty,chkNum}]（行次按原报；同码多条批内自动合并）'></textarea>"
+                    + '<div style="margin-top:10px;text-align:right;"><button class="pear-btn pear-btn-primary" id="s-confirm">交批</button></div>'
+                    + '</div>',
+                success: function () {
+                    form.render();
+                    $('#s-confirm').on('click', function () {
+                        let batchNo = $('#s-batch').val().trim();
+                        if (!batchNo) { layer.msg('批次码缺填', {icon: 2}); return; }
+                        let payload;
+                        try { payload = JSON.parse($('#s-json').val()); }
+                        catch (e) { layer.msg('JSON 解析不开：' + e.message, {icon: 2}); return; }
+                        if (!isModify && (!payload || !payload.length)) { layer.msg('空批兜底：一行没有返 0，不立批', {icon: 2}); return; }
+                        let url;
+                        if (isModify) { url = MODULE_PATH + 'submitModify?batchNo=' + encodeURIComponent(batchNo); }
+                        else {
+                            let put = $('input[name=sPut]:checked').val() || 'DISTRICT';
+                            url = MODULE_PATH + 'submitNew?batchNo=' + encodeURIComponent(batchNo) + '&putKind=' + put;
+                        }
+                        $.ajax({
+                            url: url, type: 'POST', contentType: 'application/json', data: JSON.stringify(payload),
+                            success: function (r) {
+                                if (r.code !== 200) { layer.msg(r.msg, {icon: 2}); return; }
+                                layer.closeAll();
+                                layer.alert(r.msg || '已核收', {title: '回执同次算出'});
+                                table.reload('batch-table');
+                            }
+                        });
+                    });
+                }
+            });
+        }
+
+        $('#new-btn').on('click', function () { submitDialog(false); });
+        $('#modify-btn').on('click', function () { submitDialog(true); });
+
+        $('#feebook-btn').on('click', function () {
+            layer.prompt({title: '按收费年度归集（留空=全部年度）', value: '', formType: 0}, function (year, index) {
+                $.get(MODULE_PATH + 'feeBook', {feeYear: year || ''}, function (r) {
+                    if (r.code !== 200) { layer.msg(r.msg, {icon: 2}); return; }
+                    layer.close(index);
+                    let html = '<div style="line-height:1.8;">' + (r.data.note || '') + '</div>';
+                    r.data.years.forEach(function (y) {
+                        html += '<fieldset class="layui-elem-field layui-field-title"><legend>'
+                            + y.feeYear + ' 年度（收下 ' + y.acceptedRows + ' 行，退回 ' + y.returnedRows
+                            + ' 行；应更换合计 ' + y.acceptedQty + '，核验合格合计 ' + y.acceptedChkNum + '）</legend>';
+                        html += '<table class="layui-table"><thead><tr><th>批次码</th><th>行次</th><th>点位编码</th>'
+                            + '<th>状态</th><th>应更换</th><th>核验合格</th><th>判定来源</th><th>原因</th></tr></thead><tbody>';
+                        y.lines.forEach(function (l) {
+                            html += '<tr><td>' + l.batchNo + '</td><td>' + l.rowNo + '</td><td>' + (l.itemCode || '（缺填）')
+                                + '</td><td>' + statusBadge(l.status) + '</td><td>' + (l.qty == null ? '' : l.qty)
+                                + '</td><td>' + (l.chkNum == null ? '' : l.chkNum) + '</td><td>' + (l.judgeSource || '')
+                                + '</td><td style="text-align:left;">' + (l.reason || '') + '</td></tr>';
+                        });
+                        html += '</tbody></table></fieldset>';
+                    });
+                    if (!r.data.years.length) { html += '<p style="text-align:center;color:#999;">该年度无行</p>'; }
+                    layer.open({type: 1, title: '收费册年度归集（与整册核收同一年度）', area: ['1100px', '620px'], content: html});
+                });
+            });
+        });
+    });
+</script>
+</body>
+</html>

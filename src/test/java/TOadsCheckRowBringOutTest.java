@@ -93,11 +93,11 @@ public class TOadsCheckRowBringOutTest {
     @Test
     public void oversizeBatchRejectedWhole() {
         List<SpotForm> big = new ArrayList<SpotForm>();
-        for (int i = 0; i < 501; i++) {
+        for (int i = 0; i < 100001; i++) {
             big.add(form("X" + i, "1", "0"));
         }
         SpotRuleException e = assertThrows(SpotRuleException.class,
                 () -> svc.bringOutSpots("BN-3", big, "岗"));
-        assertTrue(e.getMessage().contains("超过单批上限"));
+        assertTrue(e.getMessage().contains("防呆硬界"));
     }
 }

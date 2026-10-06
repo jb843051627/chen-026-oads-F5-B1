@@ -67,6 +67,29 @@ public class TOadsCheckRow implements Serializable {
     @ApiModelProperty(value = "行落地情形 0未勾 1已收下 2已退回")
     private Integer status;
 
+    /** 收费年度（冻结自批账：按批首回收讫那一刻所在年度，整批一个年度；落去向直接读本行） */
+    @TableField("fee_year")
+    @ApiModelProperty(value = "收费年度（冻结自批账，整批同一年度）")
+    private Integer feeYear;
+
+    /**
+     * 判定来源：本行结论依的是哪一套规矩——"新建/校验第N条"或"修改/校验第N条"。
+     * 核查时必须指得出是哪一段、依哪套标准判的；两个入口各写各的校验，来源不许混。
+     */
+    @TableField("judge_source")
+    @ApiModelProperty(value = "判定来源（新建/修改 各第几条）")
+    private String judgeSource;
+
+    /** 退回/收下的逐句原因原文（多条分号隔，按原报行次逐行可回查；收下行记合并等交代） */
+    @TableField("reason")
+    @ApiModelProperty(value = "逐句原因原文")
+    private String reason;
+
+    /** 本批内同编码并入本行的其余原报行次（逗号隔；为空表示无合并，第一条本身不重复记） */
+    @TableField("merged_row_nos")
+    @ApiModelProperty(value = "批内同码合并进来的其余原报行次")
+    private String mergedRowNos;
+
     /** 删除标记 0正常 1删除 */
     @TableField("del_flag")
     @ApiModelProperty(value = "删除标记 0正常 1删除")
@@ -161,6 +184,38 @@ public class TOadsCheckRow implements Serializable {
 
     public void setStatus(Integer status) {
         this.status = status;
+    }
+
+    public Integer getFeeYear() {
+        return feeYear;
+    }
+
+    public void setFeeYear(Integer feeYear) {
+        this.feeYear = feeYear;
+    }
+
+    public String getJudgeSource() {
+        return judgeSource;
+    }
+
+    public void setJudgeSource(String judgeSource) {
+        this.judgeSource = judgeSource;
+    }
+
+    public String getReason() {
+        return reason;
+    }
+
+    public void setReason(String reason) {
+        this.reason = reason;
+    }
+
+    public String getMergedRowNos() {
+        return mergedRowNos;
+    }
+
+    public void setMergedRowNos(String mergedRowNos) {
+        this.mergedRowNos = mergedRowNos;
     }
 
     public Integer getDelFlag() {
