@@ -24,7 +24,6 @@ import com.fc.v2.model.custom.SpotGradeQuery;
 import com.fc.v2.model.custom.SpotGradeOutcome;
 import com.fc.v2.service.ITOadsRuleLineService;
 import com.fc.v2.service.ITOadsSpotService;
-import com.fc.v2.util.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,9 +55,12 @@ public class TOadsSpotServiceImpl extends ServiceImpl<TOadsSpotMapper, TOadsSpot
 
     @Override
     public List<TOadsSpot> selectTOadsSpotList(Wrapper<TOadsSpot> queryWrapper) {
-        QueryWrapper<TOadsSpot> wrapper = new QueryWrapper<TOadsSpot>();
-        com.github.pagehelper.PageHelper.startPage(1, 10);
-        wrapper.eq("status", 0);
+        // 列表与详情同一口径、与五检查点名册同一口径：正常在册（del_flag=0）就算，
+        // 册面情形（新入册/已核齐/缺项）不影响在列，不另写一条 status=0 把别档行藏掉；
+        // 也不内部写死分页（分页由调用方 startPage 统一给），传入条件照用，不另起空 wrapper 丢掉。
+        QueryWrapper<TOadsSpot> wrapper = queryWrapper instanceof QueryWrapper
+                ? (QueryWrapper<TOadsSpot>) queryWrapper : new QueryWrapper<TOadsSpot>();
+        wrapper.eq("del_flag", 0);
         return this.baseMapper.selectList(wrapper);
     }
 
@@ -67,16 +69,13 @@ public class TOadsSpotServiceImpl extends ServiceImpl<TOadsSpotMapper, TOadsSpot
         if (record == null) {
             return 0;
         }
+        TOadsAreaBook refArch = resolveArea(record.getAreaId());
+        String bad = validateForSave(record, null, refArch, true);
+        if (bad != null) {
+            return 0;
+        }
 
         record.setCreateBy(record.getSpotNo());
-        TOadsAreaBook refArch = oadsAreaBookMapper.selectOne(new QueryWrapper<TOadsAreaBook>()
-                .eq("id", record.getAreaId()).eq("del_flag", 0));
-        if (refArch == null) {
-            return 0;
-        }
-        if (refArch.getStatus() != null && refArch.getStatus() == 1) {
-            return 0;
-        }
         record.setAreaNo(refArch.getAreaNo());
         // 挂牌情形档/挂设档位只许由设置许可核准单封存同一次处理挪：主档新建一律未挂设、第0档
         record.setSetState(0);
@@ -85,20 +84,8 @@ public class TOadsSpotServiceImpl extends ServiceImpl<TOadsSpotMapper, TOadsSpot
         record.setSafeLevel(0);
         record.setSafeRuleCode(null);
         record.setSafeEffStart(null);
-        if (StringUtils.isNotEmpty(record.getSpotNo())) {
-            Integer dupCnt = this.baseMapper.selectCount(new QueryWrapper<TOadsSpot>()
-                    .eq("spot_no", record.getSpotNo()).eq("del_flag", 0));
-            if (dupCnt != null && dupCnt > 0) {
-                return 0;
-            }
-        }
-        // 待补处数只有一套口径：核定应设-已核验（30与12得18），存量/新增不分叉。
-        // 五检查点流程的完整判定（身份/围栏/名录）在 ITOadsSpotRegisterService 那唯一裁决处；
-        // 这里的老通用建行口仍按同一减法轧数，不保留 need+got 的第二条算法。
-        int remIn = record.getNeedNum() == null ? 0 : record.getNeedNum();
-        int remOut = record.getGotNum() == null ? 0 : record.getGotNum();
-        record.setLackNum(remIn - remOut);
-
+        record.setStatus(record.getStatus() == null ? 0 : record.getStatus());
+        applyLack(record, null);
         record.setDelFlag(0);
         return this.baseMapper.insert(record);
     }
@@ -108,38 +95,117 @@ public class TOadsSpotServiceImpl extends ServiceImpl<TOadsSpotMapper, TOadsSpot
         if (record == null || record.getId() == null) {
             return 0;
         }
-
-        if (record.getId() != null && StringUtils.isNotEmpty(record.getSpotNo())) {
-            Integer dupCnt = this.baseMapper.selectCount(new QueryWrapper<TOadsSpot>()
-                    .eq("spot_no", record.getSpotNo()).ne("id", record.getId()).eq("del_flag", 0));
-            if (dupCnt != null && dupCnt > 0) {
-                return 0;
-            }
+        TOadsSpot current = this.baseMapper.selectById(record.getId());
+        if (current == null || (current.getDelFlag() != null && current.getDelFlag() != 0)) {
+            return 0;
+        }
+        // 修改口没报编码即沿用现码（旧纸簿行可能空着），两入口随后走同一把尺。
+        if (record.getSpotNo() == null || record.getSpotNo().trim().isEmpty()) {
+            record.setSpotNo(current.getSpotNo());
+        }
+        // 修改口显式改挂才重查段册；没点新段册就沿用原挂靠，旧行原无挂靠的不拦修改。
+        Integer areaId = record.getAreaId() != null ? record.getAreaId() : current.getAreaId();
+        TOadsAreaBook refArch = areaId == null ? null : resolveArea(areaId);
+        String bad = validateForSave(record, current, refArch, record.getAreaId() != null);
+        if (bad != null) {
+            return 0;
         }
 
         // 挂牌情形档/挂设档位的唯一挪法是核准单封存；通用修改入口报来的这两列一律不采信，压回现值。
         // 安全分档三列同理：只许 gradeAndFix 那一个事务固化，旁入口一律不采信。
-        // 在走步序（flow_step）只由步序留痕重数落账、待补处数（lack_num）只由 need-got 轧：
-        // 通用修改口既不采信报文自报的档，也不采信手填的待补。
-        TOadsSpot current = this.baseMapper.selectById(record.getId());
-        if (current != null) {
-            record.setSetState(current.getSetState());
-            record.setSetVer(current.getSetVer());
-            record.setSafeLevel(current.getSafeLevel());
-            record.setSafeRuleCode(current.getSafeRuleCode());
-            record.setSafeEffStart(current.getSafeEffStart());
-            record.setFlowStep(current.getFlowStep());
-            int need = record.getNeedNum() == null
-                    ? (current.getNeedNum() == null ? 0 : current.getNeedNum()) : record.getNeedNum();
-            int got = record.getGotNum() == null
-                    ? (current.getGotNum() == null ? 0 : current.getGotNum()) : record.getGotNum();
-            record.setLackNum(need - got);
+        // 在走步序（flow_step）只由步序留痕重数落账，旁入口不采信报文自报的档。
+        record.setSetState(current.getSetState());
+        record.setSetVer(current.getSetVer());
+        record.setSafeLevel(current.getSafeLevel());
+        record.setSafeRuleCode(current.getSafeRuleCode());
+        record.setSafeEffStart(current.getSafeEffStart());
+        record.setFlowStep(current.getFlowStep());
+        if (refArch != null) {
+            record.setAreaNo(refArch.getAreaNo());
+        } else {
+            // 没点新段册：冗余代号压回现值，不采信报文光报一个 area_no 字符串改挂靠。
+            record.setAreaNo(current.getAreaNo());
         }
+        applyLack(record, current);
 
         record.setUpdateTime(new Date());
         return this.baseMapper.update(record, new UpdateWrapper<TOadsSpot>()
                 .eq("id", record.getId())
                 .eq("del_flag", 0));
+    }
+
+    /**
+     * 新建与修改两个入口共用的唯一一把尺——不再各写各的：
+     * 编码非空、同码不重复（修改排除自身）、数量不为负且已核验不高于核定。
+     * 辖段挂接：新建必须在册未注销；修改只在显式改挂时重查在册未注销（旧行原挂靠不重裁）。
+     * 任一不满足逐句返回毛病；返回 null 表示过得去。
+     */
+    private String validateForSave(TOadsSpot record, TOadsSpot current, TOadsAreaBook refArch, boolean areaExplicit) {
+        boolean create = current == null;
+        String spotNo = record.getSpotNo() == null ? null : record.getSpotNo().trim();
+        if (spotNo == null || spotNo.isEmpty()) {
+            // 新建必须自带编码；修改口没报编码前面已沿用现码，走到这还空着是旧行本就无码，兼容不拦。
+            if (create) {
+                return "点位编码(spot_no)缺填";
+            }
+        } else {
+            record.setSpotNo(spotNo);
+            Integer dupCnt = this.baseMapper.selectCount(new QueryWrapper<TOadsSpot>()
+                    .eq("spot_no", spotNo).eq("del_flag", 0)
+                    .ne(!create, "id", record.getId()));
+            if (dupCnt != null && dupCnt > 0) {
+                return "点位编码(" + spotNo + ")已在册，同一编码不许再立一行";
+            }
+        }
+        if (create || areaExplicit) {
+            if (refArch == null) {
+                return "挂接的辖段段册查无此行";
+            }
+            if (refArch.getStatus() != null && refArch.getStatus() == 1) {
+                return "辖段(" + refArch.getAreaNo() + ")已注销，不再接新增/落册";
+            }
+        }
+        Integer need = record.getNeedNum();
+        Integer got = record.getGotNum();
+        if (!create) {
+            // 修改口没报数量即沿用现值，两入口裁的是同一套有效值。
+            need = need != null ? need : current.getNeedNum();
+            got = got != null ? got : current.getGotNum();
+        }
+        int n = need == null ? 0 : need;
+        int g = got == null ? 0 : got;
+        if (n < 0) {
+            return "核定应设处数(need_num)为负(" + n + ")";
+        }
+        if (g < 0) {
+            return "已核验落地处数(got_num)为负(" + g + ")";
+        }
+        if (g > n) {
+            return "已核验落地处数(" + g + ")高于核定应设处数(" + n + ")";
+        }
+        return null;
+    }
+
+    /** 待补处数只有一套口径：核定应设-已核验；修改口缺值沿用现值。新建/修改同此一法。 */
+    private void applyLack(TOadsSpot record, TOadsSpot current) {
+        int need = record.getNeedNum() != null
+                ? record.getNeedNum()
+                : (current == null || current.getNeedNum() == null ? 0 : current.getNeedNum());
+        int got = record.getGotNum() != null
+                ? record.getGotNum()
+                : (current == null || current.getGotNum() == null ? 0 : current.getGotNum());
+        record.setNeedNum(need);
+        record.setGotNum(got);
+        record.setLackNum(need - got);
+    }
+
+    /** 按段册主键取在册行；取不到（含已删）返回 null。新建/修改两入口同一取法。 */
+    private TOadsAreaBook resolveArea(Integer areaId) {
+        if (areaId == null) {
+            return null;
+        }
+        return oadsAreaBookMapper.selectOne(new QueryWrapper<TOadsAreaBook>()
+                .eq("id", areaId).eq("del_flag", 0));
     }
 
     @Override

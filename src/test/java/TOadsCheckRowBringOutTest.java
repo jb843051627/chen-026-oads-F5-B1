@@ -22,11 +22,14 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 集中更换带出（第二建行通道）：submitBatch 本体不动，bringOutSpots 逐行交名册裁决处，
- * 两通道同一套数量逻辑与判定；某行不过只带回该行检查点自己的提示语，不并句、不拖累别行。
+ * 集中更换带出（第二建行通道）：bringOutSpots 逐行交名册裁决处，同一套五检查点与数量逻辑；
+ * 某行不过只带回该行检查点自己的提示语，不并句、不拖累别行。
+ * 没有行数上限这回事——501 行也照带；空批兜底；批次季度在批次级定一次，逐行不落两个年度。
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -91,13 +94,57 @@ public class TOadsCheckRowBringOutTest {
     }
 
     @Test
-    public void oversizeBatchRejectedWhole() {
+    public void noRowLimitFiveHundredAndOneRowsAllBrought() {
+        // 没有行数上限这回事：旧实现 501 行整批抛错拦回，现在来多少带多少。
+        when(registerService.build(any(), eq(SpotFlowStep.BUILD_BATCH), eq("岗")))
+                .thenAnswer(inv -> {
+                    SpotBuildResult r = SpotBuildResult.created();
+                    r.setSpotNo(inv.getArgument(0, SpotForm.class).getSpotNo());
+                    return r;
+                });
         List<SpotForm> big = new ArrayList<SpotForm>();
         for (int i = 0; i < 501; i++) {
             big.add(form("X" + i, "1", "0"));
         }
-        SpotRuleException e = assertThrows(SpotRuleException.class,
-                () -> svc.bringOutSpots("BN-3", big, "岗"));
-        assertTrue(e.getMessage().contains("超过单批上限"));
+        SpotBatchBringOutcome o = svc.bringOutSpots("BN-3", big, "岗");
+        assertEquals(501, o.getTotal());
+        assertEquals(501, o.getSuccessCount());
+        assertEquals(0, o.getFailureCount());
+        verify(registerService, times(501)).build(any(), eq(SpotFlowStep.BUILD_BATCH), eq("岗"));
+    }
+
+    @Test
+    public void batchQuarterResolvedOnceAndStampedOnEveryRow() {
+        // 整册核收认定当季：报文没带季度码的行统一补同一季，逐行落去向不会一年之差。
+        when(registerService.currentQuarter()).thenReturn("2026Q4");
+        when(registerService.build(any(), eq(SpotFlowStep.BUILD_BATCH), eq("岗")))
+                .thenAnswer(inv -> {
+                    SpotForm got = inv.getArgument(0);
+                    assertEquals("2026Q4", got.getQuarterCode(), "批次季度只定一次，每行一致");
+                    SpotBuildResult r = SpotBuildResult.created();
+                    r.setSpotNo(got.getSpotNo());
+                    return r;
+                });
+        List<SpotForm> forms = Arrays.asList(form("Q1", "3", "1"), form("Q2", "2", "2"));
+        SpotBatchBringOutcome o = svc.bringOutSpots("BN-4", forms, "岗");
+        assertEquals(2, o.getSuccessCount());
+        verify(registerService, times(1)).currentQuarter();
+    }
+
+    @Test
+    public void reportedQuarterKeptAndSharedToBlankRows() {
+        // 报文头一行带了季度（如 2025Q4 跨季补送）：全批以这一版为准，空季行补同季，不替它改年度。
+        when(registerService.build(any(), eq(SpotFlowStep.BUILD_BATCH), eq("岗")))
+                .thenAnswer(inv -> {
+                    SpotForm got = inv.getArgument(0);
+                    assertEquals("2025Q4", got.getQuarterCode());
+                    return SpotBuildResult.created();
+                });
+        SpotForm first = form("Y1", "3", "1");
+        first.setQuarterCode("2025Q4");
+        SpotForm second = form("Y2", "3", "1");
+        svc.bringOutSpots("BN-5", Arrays.asList(first, second), "岗");
+        assertEquals("2025Q4", second.getQuarterCode());
+        verify(registerService, times(0)).currentQuarter();
     }
 }
